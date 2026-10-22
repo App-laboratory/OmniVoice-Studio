@@ -4,7 +4,10 @@ issue construction. No network, no auto-submit.
 
 from __future__ import annotations
 
+import subprocess
 import urllib.parse
+
+import pytest
 
 from . import triage as T
 from .report import Report, SpecOutcome
@@ -31,10 +34,26 @@ def test_sanitize_strips_home_and_secrets():
     assert "[REDACTED]" in T.sanitize("token hf_abcdef123456 leaked")
 
 
-def test_detect_repo_from_origin():
-    # This repo's origin is github.com/debpalash/OmniVoice-Studio.
-    repo = T.detect_repo()
-    assert repo == ("debpalash", "OmniVoice-Studio")
+def _checkout(tmp_path, origin):
+    """Build a local Git checkout without depending on this clone's remotes."""
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    if origin is not None:
+        subprocess.run(
+            ["git", "remote", "add", "origin", origin], cwd=tmp_path, check=True,
+        )
+    return str(tmp_path)
+
+
+@pytest.mark.parametrize("origin, expected", [
+    ("https://github.com/example-owner/example-repo.git", ("example-owner", "example-repo")),
+    ("https://github.com/another-owner/another-repo/", ("another-owner", "another-repo")),
+    ("git@github.com:fork-owner/fork-repo.git", ("fork-owner", "fork-repo")),
+    ("ssh://git@github.com/ssh-owner/ssh-repo.git", ("ssh-owner", "ssh-repo")),
+    ("https://gitlab.com/example-owner/example-repo.git", None),
+    (None, None),
+])
+def test_detect_repo_from_origin(tmp_path, origin, expected):
+    assert T.detect_repo(_checkout(tmp_path, origin)) == expected
 
 
 def test_clustering_dedupes_and_excludes_nonblocking():
@@ -53,11 +72,15 @@ def test_build_issue_title_and_table():
     assert "`asr_wer_below`" in body and "| 2 |" in body
 
 
-def test_triage_builds_github_url():
-    res = T.triage(_failing_report())
-    assert res.owner == "debpalash" and res.repo == "OmniVoice-Studio"
+@pytest.mark.parametrize("origin, owner, repo", [
+    ("https://github.com/example-owner/example-repo.git", "example-owner", "example-repo"),
+    ("git@github.com:fork-owner/fork-repo.git", "fork-owner", "fork-repo"),
+])
+def test_triage_builds_github_url(tmp_path, origin, owner, repo):
+    res = T.triage(_failing_report(), cwd=_checkout(tmp_path, origin))
+    assert res.owner == owner and res.repo == repo
     assert res.url and res.url.startswith(
-        "https://github.com/debpalash/OmniVoice-Studio/issues/new?"
+        f"https://github.com/{owner}/{repo}/issues/new?"
     )
     q = urllib.parse.parse_qs(urllib.parse.urlparse(res.url).query)
     assert q["title"][0] == res.title
